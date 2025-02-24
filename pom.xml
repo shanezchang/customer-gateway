@@ -67,7 +67,6 @@
             <scope>test</scope>
         </dependency>
 
-
         <!-- Spring Cloud Starter -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>

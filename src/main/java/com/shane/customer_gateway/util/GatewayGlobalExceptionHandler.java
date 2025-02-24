@@ -1,4 +1,4 @@
-package com.shane.customer_gateway;
+package com.shane.customer_gateway.util;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
