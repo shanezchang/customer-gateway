@@ -15,6 +15,9 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import java.net.ConnectException;
+import java.util.concurrent.TimeoutException;
+
 
 @Component
 @Order(-1)
@@ -30,8 +33,12 @@ public class GatewayGlobalExceptionHandler implements ErrorWebExceptionHandler {
             return Mono.error(ex);
         }
 
+        // 获取确定的HTTP状态码
+        HttpStatusCode statusCode = determineHttpStatusCode(ex);
+        response.setStatusCode(statusCode);
+
         // 构建统一响应对象
-        R<?> result = this.buildErrorResult(ex);
+        R<?> result = buildErrorResult(ex);
 
         // 设置响应头
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
@@ -46,24 +53,36 @@ public class GatewayGlobalExceptionHandler implements ErrorWebExceptionHandler {
     }
 
     private R<?> buildErrorResult(Throwable ex) {
-        HttpStatusCode statusCode = this.determineHttpStatusCode(ex);
+        HttpStatusCode statusCode = determineHttpStatusCode(ex);
         return new R<>(
                 statusCode.value(),
-                this.getErrorMessage(ex, statusCode),
+                getErrorMessage(ex, statusCode),
                 null,
                 System.currentTimeMillis()
         );
     }
 
     private HttpStatusCode determineHttpStatusCode(Throwable ex) {
-        if (ex instanceof ResponseStatusException rse) {
+        if (ex instanceof BusinessException) {
+            return HttpStatus.valueOf(((BusinessException) ex).getCode());
+        } else if (ex instanceof ResponseStatusException rse) {
             return rse.getStatusCode();
+        }
+        // 新增对连接相关异常的识别
+        else if (ex instanceof ConnectException || ex instanceof TimeoutException) {
+            return HttpStatus.SERVICE_UNAVAILABLE;
         }
         return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private String getErrorMessage(Throwable ex, HttpStatusCode statusCode) {
-        if (ex instanceof ResponseStatusException rse) {
+        // 新增对服务不可用状态的错误描述
+        if (statusCode == HttpStatus.SERVICE_UNAVAILABLE) {
+            return "下游服务暂时不可用，请稍后重试";
+        }
+        if (ex instanceof BusinessException) {
+            return ex.getMessage();
+        } else if (ex instanceof ResponseStatusException rse) {
             return rse.getReason();
         }
         return statusCode.toString();
