@@ -13,10 +13,10 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.util.AntPathMatcher;
+import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.ServerWebExchange;
-import org.springframework.web.util.UriComponentsBuilder;
 import reactor.core.publisher.Mono;
 
 import java.net.ConnectException;
@@ -41,28 +41,30 @@ public class AuthorizationValidationFilter implements GlobalFilter, Ordered {
         // 优化路径匹配逻辑，使用常量中的路径列表
         boolean isNeedToken = Constants.NEED_AUTH_PATH_LIST.stream()
                 .anyMatch(url -> pathMatcher.match(url, request.getPath().toString()));
-        
+
         // 提前初始化token变量，优化日志输出
         String token = isNeedToken ? request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION) : "";
-        log.info("Authorization check - Path: {}, NeedsAuth: {}", request.getPath(), isNeedToken);
+        String clientIp = ExtractClientIP.extractClientIp(exchange);
+        log.info("Authorization check - IP:{}, Path: {}, NeedsAuth: {}", clientIp, request.getPath(), isNeedToken);
 
         if (isNeedToken) {
-            if (Strings.isBlank(token)) {
-                log.warn("Unauthorized access attempt: {}", request.getURI());
-                return Mono.error(new BusinessException(HttpStatus.UNAUTHORIZED.value(), "用户未登录"));
-            }
+            return this.buildAuthRequest(token)
+                    .retrieve()
+                    // 增强HTTP状态码处理
+                    .onStatus(status -> !status.is2xxSuccessful(), this::handleHttpError)
+                    .bodyToMono(R.class)
+                    .timeout(Duration.ofSeconds(AUTH_TOKEN_TIMEOUT),
+                            Mono.error(new BusinessException(HttpStatus.GATEWAY_TIMEOUT.value(), "认证服务响应超时")))
+                    // 添加网络异常处理
+                    .onErrorResume(this::handleNetworkException)
+                    .flatMap(response -> this.processAuthResponse(exchange, chain, response, clientIp));
         }
-        
-        return this.buildAuthRequest(token)
-                .retrieve()
-                // 增强HTTP状态码处理
-                .onStatus(status -> !status.is2xxSuccessful(), this::handleHttpError)
-                .bodyToMono(R.class)
-                .timeout(Duration.ofSeconds(AUTH_TOKEN_TIMEOUT), 
-                    Mono.error(new BusinessException(HttpStatus.GATEWAY_TIMEOUT.value(), "认证服务响应超时")))
-                // 添加网络异常处理
-                .onErrorResume(this::handleNetworkException)
-                .flatMap(response -> this.processAuthResponse(exchange, chain, response));
+
+        // 实现 非认证路径添加用户IP头
+        ServerHttpRequest newRequest = exchange.getRequest().mutate()
+                .header(Constants.USER_IP, clientIp)
+                .build();
+        return chain.filter(exchange.mutate().request(newRequest).build());
     }
 
     // 新增网络异常处理方法
@@ -112,21 +114,25 @@ public class AuthorizationValidationFilter implements GlobalFilter, Ordered {
 
     private Mono<Void> processAuthResponse(ServerWebExchange exchange,
                                            GatewayFilterChain chain,
-                                           R<?> response) {
-        // 校验响应结构
-        if (response == null || response.getData() == null) {
-            return Mono.error(new BusinessException("无效的认证响应"));
+                                           R<?> response, String clientIp) {
+        // 新增空响应体检查
+        if (response == null) {
+            return Mono.error(new BusinessException(500, "认证服务响应格式异常"));
         }
 
         if (response.getCode() != 200) {
-            return Mono.error(new BusinessException(response.getCode(), response.getMsg()));
+            // 精确传递后端服务返回的错误信息
+            return Mono.error(new BusinessException(
+                    response.getCode(),
+                    StringUtils.hasText(response.getMsg()) ? response.getMsg() : "认证服务异常"
+            ));
         }
 
         // 添加请求头并继续执行
         String userId = String.valueOf(response.getData());
         ServerHttpRequest newRequest = exchange.getRequest().mutate()
                 .header(Constants.USER_ID, userId)
-                .header(Constants.USER_IP, ExtractClientIP.extractClientIp(exchange))
+                .header(Constants.USER_IP, clientIp)
                 .build();
 
         return chain.filter(exchange.mutate().request(newRequest).build());
