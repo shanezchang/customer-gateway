@@ -55,20 +55,19 @@ public class GatewayGlobalExceptionHandler implements ErrorWebExceptionHandler {
     private R<?> buildErrorResult(Throwable ex) {
         HttpStatusCode statusCode = determineHttpStatusCode(ex);
         // 新增业务异常处理分支
-        if (ex instanceof BusinessException) {
-            BusinessException be = (BusinessException) ex;
+        if (ex instanceof BusinessException be) {
             return new R<>(
-                be.getCode(),  // 使用业务异常代码
-                be.getMessage(), // 直接使用异常消息
-                null,
-                System.currentTimeMillis()
+                    be.getCode(),
+                    be.getMessage(),
+                    null,
+                    System.currentTimeMillis()
             );
         }
         return new R<>(
-            statusCode.value(),
-            getErrorMessage(ex, statusCode),
-            null,
-            System.currentTimeMillis()
+                statusCode.value(),
+                getErrorMessage(ex, statusCode),
+                null,
+                System.currentTimeMillis()
         );
     }
 
